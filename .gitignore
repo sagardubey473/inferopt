@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+*.db
+*.db-wal
+*.db-shm
+inferopt-replay-*.md
