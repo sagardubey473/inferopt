@@ -18,7 +18,7 @@ import urllib.parse
 
 import httpx
 
-from . import db, pricing
+from . import capture, db, pricing
 
 API_VERSION = "2023-06-01"
 DEFAULT_JUDGE_ANTHROPIC = "claude-opus-5"
@@ -83,9 +83,7 @@ def _call_anthropic(client, headers, body):
     if r.status_code != 200:
         return None, f"HTTP {r.status_code}: {r.text[:200]}"
     data = r.json()
-    text = "\n".join(b.get("text", "") for b in data.get("content", [])
-                     if b.get("type") == "text")
-    return text, None
+    return capture.anthropic_content_text(data.get("content")), None
 
 
 def _call_bedrock(client, action, model_id, body):
@@ -107,16 +105,22 @@ def _call_bedrock(client, action, model_id, body):
     return text, None
 
 
-def _judge_prompt(task, baseline, candidate):
+def _judge_prompt(task, resp_a, resp_b):
     return (
-        "You are grading two AI responses to the same task. Response A is "
-        "the baseline (current production model); Response B is a cheaper "
-        "candidate. Judge whether B is an acceptable substitute for A.\n\n"
+        "You are grading two AI responses to the same task, labeled A and "
+        "B. One is from the current production model and one from a "
+        "candidate replacement; you are NOT told which is which.\n"
+        "Judge SUBSTANCE only: factual and technical accuracy, completeness "
+        "of the required content, and instruction adherence. Do NOT reward "
+        "length, verbosity, bullet density, or formatting - more detailed "
+        "does not mean better unless the task demands it. A response may be "
+        "a serialized tool call ('[tool_use <name>] {json}'); in that case "
+        "judge the correctness and completeness of the field values.\n\n"
         f"TASK (truncated):\n{task[:2000]}\n\n"
-        f"RESPONSE A (baseline, truncated):\n{baseline[:4000]}\n\n"
-        f"RESPONSE B (candidate, truncated):\n{candidate[:4000]}\n\n"
+        f"RESPONSE A (truncated):\n{resp_a[:4000]}\n\n"
+        f"RESPONSE B (truncated):\n{resp_b[:4000]}\n\n"
         "Reply with exactly one line first: "
-        "VERDICT: equivalent | candidate_worse | candidate_better\n"
+        "VERDICT: equivalent | a_better | b_better\n"
         "Then one sentence of justification."
     )
 
@@ -192,9 +196,11 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
         _sanitize(body, body.get("model"))
         return _call_anthropic(a_client, anthropic_headers, body)
 
-    def run_judge(row, task, baseline, candidate):
+    def run_judge(row, task, baseline, candidate, idx):
         rail = _rail(row)
-        prompt = _judge_prompt(task, baseline, candidate)
+        swapped = idx % 2 == 1  # alternate A/B order to cancel position bias
+        a, b = (candidate, baseline) if swapped else (baseline, candidate)
+        prompt = _judge_prompt(task, a or "", b or "")
         if rail.startswith("bedrock"):
             jm = judge_model or row["model"]  # incumbent model as judge
             body = {"anthropic_version": "bedrock-2023-05-31",
@@ -209,7 +215,16 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
         if err:
             return "judge_error", err
         m = re.search(r"VERDICT:\s*(\w+)", text or "")
-        return (m.group(1) if m else "unparsed"), (text or "").strip()
+        raw = m.group(1).lower() if m else "unparsed"
+        cand_side = "a" if swapped else "b"
+        if raw == "equivalent":
+            verdict = "equivalent"
+        elif raw in ("a_better", "b_better"):
+            verdict = ("candidate_better" if raw[0] == cand_side
+                       else "candidate_worse")
+        else:
+            verdict = raw
+        return verdict, (text or "").strip()
 
     pairs, verdicts = [], []
     for i, r in enumerate(rows, 1):
@@ -223,7 +238,7 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
         verdict, reason = "", ""
         if judge:
             verdict, reason = run_judge(r, _first_user_text(body),
-                                        r["response_text"], cand)
+                                        r["response_text"], cand, i)
             verdicts.append(verdict)
         pairs.append((r, cand, verdict, reason, lat))
         print(f"  [{i}/{len(rows)}] ok {lat:.1f}s"
@@ -238,7 +253,8 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
         if verdicts:
             from collections import Counter
             f.write(f"**Judge summary:** {dict(Counter(verdicts))} "
-                    f"(fixed A/B order - spot-check pairs yourself)\n\n")
+                    f"(blind judge, A/B order alternated per pair; "
+                    f"spot-check pairs yourself)\n\n")
         for r, cand, verdict, reason, lat in pairs:
             f.write(f"## request {r['id']} ({r['model']}, {_rail(r)})\n\n")
             f.write(f"**task (first user msg):**\n\n```\n"

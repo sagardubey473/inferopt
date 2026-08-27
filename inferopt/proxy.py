@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
-from . import db, fingerprint, pricing
+from . import capture, db, fingerprint, pricing
 
 UPSTREAM = os.environ.get("INFEROPT_UPSTREAM", "https://api.anthropic.com")
 STORE_BODIES = os.environ.get("INFEROPT_STORE_BODIES", "1") != "0"
@@ -97,10 +97,7 @@ def _record_json(body, raw, r, latency):
         data = r.json()
         model = data.get("model") or model
         input_t, output_t, cr, cw = _usage_fields(data.get("usage"))
-        resp_text = "\n".join(
-            b.get("text", "") for b in data.get("content") or []
-            if isinstance(b, dict) and b.get("type") == "text"
-        ) or None
+        resp_text = capture.anthropic_content_text(data.get("content"))
     except Exception:
         pass
     _insert(body, raw, r.status_code, model, input_t, output_t, cr, cw,
@@ -125,10 +122,17 @@ def _parse_sse_line(line, state):
         u = evt.get("usage") or {}
         if u.get("output_tokens") is not None:
             state["output"] = u["output_tokens"]  # cumulative
+    elif t == "content_block_start":
+        cb = evt.get("content_block") or {}
+        if cb.get("type") == "tool_use":
+            state.setdefault("tools", []).append(
+                {"name": cb.get("name", "?"), "parts": []})
     elif t == "content_block_delta":
         d = evt.get("delta") or {}
         if d.get("type") == "text_delta":
             state["text"].append(d.get("text", ""))
+        elif d.get("type") == "input_json_delta" and state.get("tools"):
+            state["tools"][-1]["parts"].append(d.get("partial_json", ""))
 
 
 async def _relay_stream(url, headers, raw, body):
@@ -137,7 +141,7 @@ async def _relay_stream(url, headers, raw, body):
     req = client.build_request("POST", url, headers=headers, content=raw)
     upstream = await client.send(req, stream=True)
     state = {"input": 0, "output": 0, "cr": 0, "cw": 0,
-             "model": body.get("model"), "text": []}
+             "model": body.get("model"), "text": [], "tools": []}
 
     async def gen():
         buf = b""
@@ -153,7 +157,7 @@ async def _relay_stream(url, headers, raw, body):
             _insert(body, raw, upstream.status_code, state["model"],
                     state["input"], state["output"], state["cr"], state["cw"],
                     (time.time() - t0) * 1000,
-                    "".join(state["text"]) or None)
+                    capture.stream_final_text(state))
 
     resp_headers = {k: v for k, v in upstream.headers.items()
                     if k.lower() not in _RESP_DROP}
@@ -202,7 +206,8 @@ async def _relay_bedrock(request, path, raw):
                                    content=raw)
         upstream = await client.send(req, stream=True)
         es = br.EventStream()
-        state = {"input": 0, "output": 0, "cr": 0, "cw": 0, "text": []}
+        state = {"input": 0, "output": 0, "cr": 0, "cw": 0, "text": [],
+                 "tools": []}
 
         async def gen():
             try:
@@ -216,7 +221,7 @@ async def _relay_bedrock(request, path, raw):
                     _insert(body, raw, upstream.status_code, model_id,
                             state["input"], state["output"], state["cr"],
                             state["cw"], (time.time() - t0) * 1000,
-                            "".join(state["text"]) or None,
+                            capture.stream_final_text(state),
                             stream=1, rail=rail, fp_body=fp_body)
 
         resp_headers = {k: v for k, v in upstream.headers.items()

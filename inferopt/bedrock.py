@@ -9,6 +9,8 @@ import base64
 import json
 import struct
 
+from . import capture
+
 _session = None
 
 
@@ -116,19 +118,17 @@ def extract_response(action, data):
     Bedrock response body."""
     if action == "invoke":
         u = data.get("usage") or {}
-        text = "\n".join(b.get("text", "") for b in data.get("content") or []
-                         if isinstance(b, dict) and b.get("type") == "text")
+        text = capture.anthropic_content_text(data.get("content"))
         return (u.get("input_tokens") or 0, u.get("output_tokens") or 0,
                 u.get("cache_read_input_tokens") or 0,
-                u.get("cache_creation_input_tokens") or 0, text or None)
+                u.get("cache_creation_input_tokens") or 0, text)
     # converse
     u = data.get("usage") or {}
     msg = (data.get("output") or {}).get("message") or {}
-    text = "\n".join(b.get("text", "") for b in msg.get("content") or []
-                     if isinstance(b, dict) and "text" in b)
+    text = capture.converse_content_text(msg.get("content"))
     return (u.get("inputTokens") or 0, u.get("outputTokens") or 0,
             u.get("cacheReadInputTokens") or 0,
-            u.get("cacheWriteInputTokens") or 0, text or None)
+            u.get("cacheWriteInputTokens") or 0, text)
 
 
 def apply_stream_event(action, headers, payload, state):
@@ -155,17 +155,32 @@ def apply_stream_event(action, headers, payload, state):
             u = evt.get("usage") or {}
             if u.get("output_tokens") is not None:
                 state["output"] = u["output_tokens"]
+        elif t == "content_block_start":
+            cb = evt.get("content_block") or {}
+            if cb.get("type") == "tool_use":
+                state.setdefault("tools", []).append(
+                    {"name": cb.get("name", "?"), "parts": []})
         elif t == "content_block_delta":
             d = evt.get("delta") or {}
             if d.get("type") == "text_delta":
                 state["text"].append(d.get("text", ""))
+            elif d.get("type") == "input_json_delta" and state.get("tools"):
+                state["tools"][-1]["parts"].append(d.get("partial_json", ""))
         return
     # converse-stream: event type lives in the frame header
     et = headers.get(":event-type")
-    if et == "contentBlockDelta":
+    if et == "contentBlockStart":
+        tu = (evt.get("start") or {}).get("toolUse")
+        if tu:
+            state.setdefault("tools", []).append(
+                {"name": tu.get("name", "?"), "parts": []})
+    elif et == "contentBlockDelta":
         d = evt.get("delta") or {}
         if "text" in d:
             state["text"].append(d.get("text", ""))
+        elif "toolUse" in d and state.get("tools"):
+            state["tools"][-1]["parts"].append(
+                (d.get("toolUse") or {}).get("input", ""))
     elif et == "metadata":
         u = evt.get("usage") or {}
         state["input"] = u.get("inputTokens") or 0

@@ -113,9 +113,24 @@ sessions with bodies ON (default) so replay/judge have material, and
 client-data sessions with `INFEROPT_STORE_BODIES=0` (metadata-only).
 Validate on synthetic, observe production metadata-only.
 
-## Known limitations (v0.3)
+## Structured outputs / tool calling
+
+Tool-calling responses (LangChain `.with_structured_output()`, function
+calling, etc.) contain no text blocks - the payload is in
+`tool_use.input`. inferopt serializes those as
+`[tool_use <name>] <sorted-json>` on both rails (stream and non-stream),
+so structured call sites are fully loggable and replayable; the judge is
+instructed to grade tool-call field values on substance. The judge is
+blind (not told which side is the incumbent) and A/B order alternates per
+pair to cancel position and verbosity bias.
+
+## Known limitations (v0.4)
 
 - Rails: Anthropic API + Bedrock. Vertex AI not yet supported.
+- Replay calls go direct (bypass the proxy), so replay spend isn't logged
+  in the db - the printed estimate is your record.
+- Rows logged before v0.4 with NULL response_text (tool-calling responses)
+  stay unreplayable; re-run those workloads to capture them properly.
 - `--effort` override not yet supported for converse-logged rows.
 - Bedrock re-signing validated against real AWS (us-east-1).
 - Claude Code on OAuth (subscription) auth: not the target; instrument
