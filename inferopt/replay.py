@@ -89,8 +89,15 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
     rows = con.execute(
         "SELECT * FROM requests WHERE callsite=? AND body_json IS NOT NULL "
         "AND response_text IS NOT NULL AND status BETWEEN 200 AND 299 "
+        "AND (rail IS NULL OR rail='anthropic') "
         "ORDER BY ts DESC LIMIT ?", (callsite, n)).fetchall()
     if not rows:
+        n_bedrock = con.execute(
+            "SELECT COUNT(*) FROM requests WHERE callsite=? AND rail LIKE "
+            "'bedrock%'", (callsite,)).fetchone()[0]
+        if n_bedrock:
+            sys.exit(f"replay: site {callsite} is Bedrock traffic - replay "
+                     "over Bedrock isn't wired up yet (v0.2); ask for it")
         sys.exit(f"replay: no stored request bodies for site {callsite} "
                  "(bodies stored? INFEROPT_STORE_BODIES=0 disables replay)")
 

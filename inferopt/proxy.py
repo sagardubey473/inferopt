@@ -18,6 +18,14 @@ from . import db, fingerprint, pricing
 
 UPSTREAM = os.environ.get("INFEROPT_UPSTREAM", "https://api.anthropic.com")
 STORE_BODIES = os.environ.get("INFEROPT_STORE_BODIES", "1") != "0"
+BEDROCK_REGION = (os.environ.get("INFEROPT_BEDROCK_REGION")
+                  or os.environ.get("AWS_REGION")
+                  or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1")
+BEDROCK_UPSTREAM = os.environ.get(
+    "INFEROPT_BEDROCK_UPSTREAM",
+    f"https://bedrock-runtime.{BEDROCK_REGION}.amazonaws.com")
+_BEDROCK_ACTIONS = {"invoke", "converse",
+                    "invoke-with-response-stream", "converse-stream"}
 
 # hop-by-hop / recomputed headers we never forward
 _REQ_DROP = {"host", "content-length", "connection", "accept-encoding",
@@ -43,30 +51,32 @@ app = FastAPI(lifespan=_lifespan)
 
 
 def _insert(body, raw, status, model, input_t, output_t, cr, cw, latency,
-            resp_text):
-    fp, hint = fingerprint.callsite(body)
+            resp_text, stream=None, rail="anthropic", fp_body=None):
+    fp_body = fp_body if fp_body is not None else body
+    fp, hint = fingerprint.callsite(fp_body)
     cost = pricing.cost_usd(model, input_t, output_t, cr, cw)
     effort = (body.get("output_config") or {}).get("effort")
+    if stream is None:
+        stream = 1 if body.get("stream") else 0
     _state["con"].execute(
         "INSERT INTO requests (ts,callsite,hint,model,stream,effort,status,"
         "latency_ms,input_tokens,output_tokens,cache_read_tokens,"
         "cache_write_tokens,cost_usd,uses_cache_control,prefix,body_json,"
-        "response_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "response_text,rail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            time.time(), fp, hint, model,
-            1 if body.get("stream") else 0, effort, status, latency,
+            time.time(), fp, hint, model, stream, effort, status, latency,
             input_t, output_t, cr, cw, cost,
-            1 if b'"cache_control"' in raw else 0,
-            fingerprint.prefix_string(body),
+            1 if (b'"cache_control"' in raw or b'"cachePoint"' in raw) else 0,
+            fingerprint.prefix_string(fp_body),
             raw.decode("utf-8", "replace") if STORE_BODIES else None,
-            resp_text,
+            resp_text, rail,
         ),
     )
     _state["con"].commit()
     cost_s = f"${cost:.4f}" if cost is not None else "$?"
-    print(f"[inferopt] {model or '?'} site={fp} in={input_t} out={output_t} "
-          f"cache_read={cr} cache_write={cw} {cost_s} {latency:.0f}ms",
-          flush=True)
+    print(f"[inferopt] [{rail}] {model or '?'} site={fp} in={input_t} "
+          f"out={output_t} cache_read={cr} cache_write={cw} {cost_s} "
+          f"{latency:.0f}ms", flush=True)
 
 
 def _usage_fields(usage):
@@ -151,10 +161,92 @@ async def _relay_stream(url, headers, raw, body):
                              headers=resp_headers)
 
 
+async def _relay_bedrock(request, path, raw):
+    from . import bedrock as br
+    parts = path.split("/")
+    model_id = ""
+    action = ""
+    if len(parts) >= 3 and parts[0] == "model":
+        import urllib.parse
+        model_id = urllib.parse.unquote(parts[1])
+        action = parts[2]
+    raw_path = request.scope.get("raw_path", b"/" + path.encode()).decode()
+    url = BEDROCK_UPSTREAM + raw_path
+    fwd = {}
+    for k in ("content-type", "accept"):
+        v = request.headers.get(k)
+        if v:
+            fwd[k] = v
+    try:
+        signed = br.sign(request.method, url, fwd, raw, BEDROCK_REGION)
+    except Exception as e:
+        return Response(
+            content=json.dumps({"inferopt_error": str(e)}),
+            status_code=500, media_type="application/json")
+
+    instrument = action in _BEDROCK_ACTIONS
+    body = {}
+    if instrument:
+        try:
+            body = json.loads(raw)
+        except Exception:
+            instrument = False
+    fp_body = br.pseudo_body(body, action) if instrument else {}
+    rail = f"bedrock:{action.split('-')[0]}" if instrument else "bedrock"
+    streaming = action.endswith("stream")
+    client = _state["client"]
+    t0 = time.time()
+
+    if streaming:
+        req = client.build_request(request.method, url, headers=signed,
+                                   content=raw)
+        upstream = await client.send(req, stream=True)
+        es = br.EventStream()
+        state = {"input": 0, "output": 0, "cr": 0, "cw": 0, "text": []}
+
+        async def gen():
+            try:
+                async for chunk in upstream.aiter_raw():
+                    for hdrs, payload in es.feed(chunk):
+                        br.apply_stream_event(action, hdrs, payload, state)
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                if instrument:
+                    _insert(body, raw, upstream.status_code, model_id,
+                            state["input"], state["output"], state["cr"],
+                            state["cw"], (time.time() - t0) * 1000,
+                            "".join(state["text"]) or None,
+                            stream=1, rail=rail, fp_body=fp_body)
+
+        resp_headers = {k: v for k, v in upstream.headers.items()
+                        if k.lower() not in _RESP_DROP}
+        return StreamingResponse(gen(), status_code=upstream.status_code,
+                                 headers=resp_headers)
+
+    r = await client.request(request.method, url, headers=signed, content=raw)
+    latency = (time.time() - t0) * 1000
+    if instrument:
+        i = o = cr = cw = 0
+        text = None
+        try:
+            i, o, cr, cw, text = br.extract_response(action, r.json())
+        except Exception:
+            pass
+        _insert(body, raw, r.status_code, model_id, i, o, cr, cw, latency,
+                text, stream=0, rail=rail, fp_body=fp_body)
+    resp_headers = {k: v for k, v in r.headers.items()
+                    if k.lower() not in _RESP_DROP}
+    return Response(content=r.content, status_code=r.status_code,
+                    headers=resp_headers)
+
+
 @app.api_route("/{path:path}",
                methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def relay(request: Request, path: str):
     raw = await request.body()
+    if path.startswith(("model/", "async-invoke", "guardrail")):
+        return await _relay_bedrock(request, path, raw)
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _REQ_DROP}
     url = "/" + path
@@ -187,9 +279,13 @@ async def relay(request: Request, path: str):
 
 def run(port=8484):
     import uvicorn
-    print(f"[inferopt] proxy on http://127.0.0.1:{port}  ->  {UPSTREAM}")
+    print(f"[inferopt] proxy on http://127.0.0.1:{port}")
+    print(f"[inferopt]   anthropic rail -> {UPSTREAM}")
+    print(f"[inferopt]   bedrock rail   -> {BEDROCK_UPSTREAM} "
+          f"(region {BEDROCK_REGION}, re-signed with local AWS creds)")
     print(f"[inferopt] logging to {db.DEFAULT_DB}"
           + ("" if STORE_BODIES else "  (metadata only, bodies not stored)"))
     print(f"[inferopt] point your code at it with:")
     print(f"[inferopt]   export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
+    print(f"[inferopt]   export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:{port}")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

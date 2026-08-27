@@ -41,6 +41,31 @@ Works with every official Anthropic SDK (they all honor
 `ANTHROPIC_BASE_URL`) and with Claude Code when authenticated with an API
 key. Streaming is fully supported.
 
+## AWS Bedrock
+
+The proxy has a second rail for Bedrock. Because Bedrock requests are
+SigV4-signed over the Host header, the proxy re-signs each request with
+your local AWS credential chain (env vars / profile / SSO) before
+forwarding - so your normal `aws` login must work in the shell running
+the proxy.
+
+```bash
+# terminal 2 (instead of / alongside ANTHROPIC_BASE_URL):
+export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8484
+python your_bedrock_script.py     # boto3 - zero code changes
+```
+
+For the anthropic SDK's Bedrock client, pass the URL explicitly:
+`AnthropicBedrock(base_url="http://127.0.0.1:8484", ...)`.
+
+Supported and instrumented: `invoke_model`, `converse`, and both streaming
+variants (AWS eventstream parsing included). Region comes from
+`INFEROPT_BEDROCK_REGION` / `AWS_REGION` / `AWS_DEFAULT_REGION`
+(default us-east-1). `invoke` and `converse` calls with the same prompt
+structure map to the same call site, so findings are rail-agnostic.
+Costs use Anthropic first-party rates - Bedrock list prices can differ
+slightly (regional endpoints carry a 10% premium).
+
 ## Commands
 
 | Command | What it does |
@@ -73,11 +98,14 @@ key. Streaming is fully supported.
   API's render order) is diffed byte-by-byte between consecutive requests;
   the first differing byte is the invalidator.
 
-## Known limitations (v0)
+## Known limitations (v0.2)
 
-- Anthropic API only. Bedrock/Vertex traffic doesn't flow through this
-  (different endpoints + SigV4 auth). If your workload runs on Bedrock,
-  tell me - that's an adapter, not a rewrite.
+- Rails: Anthropic API + Bedrock. Vertex AI not yet supported.
+- `replay` works on anthropic-rail traffic only for now (Bedrock replay
+  needs signing wiring - ask for it).
+- Bedrock re-signing against real AWS is tested in mock only so far; if
+  you hit `InvalidSignatureException` on a model id with unusual
+  characters, report it.
 - Claude Code on OAuth (subscription) auth: not the target; instrument
   API-key workloads.
 - `usage` fields are read from responses; requests that fail mid-stream may

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS requests (
   input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
   cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
   cost_usd REAL, uses_cache_control INTEGER, prefix TEXT,
+  rail TEXT DEFAULT 'anthropic',
   body_json TEXT, response_text TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_callsite ON requests(callsite);
@@ -26,5 +27,9 @@ def connect(path=None):
     con = sqlite3.connect(path, check_same_thread=False)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    try:  # migrate DBs created before the Bedrock rail existed
+        con.execute("ALTER TABLE requests ADD COLUMN rail TEXT DEFAULT 'anthropic'")
+    except sqlite3.OperationalError:
+        pass
     con.row_factory = sqlite3.Row
     return con

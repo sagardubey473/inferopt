@@ -67,6 +67,10 @@ def summarize_group(rs):
     total_in = g["in_t"] + g["cr"] + g["cw"]
     g["hit_rate"] = g["cr"] / total_in if total_in else 0.0
     g["avg_latency"] = sum(r["latency_ms"] or 0 for r in rs) / len(rs)
+    try:
+        g["rail"] = rs[-1]["rail"] or "anthropic"
+    except (KeyError, IndexError):
+        g["rail"] = "anthropic"
     return g
 
 
@@ -209,7 +213,7 @@ def render(out):
     add("-" * 60)
     for fp, g in sorted(out["groups"].items(), key=lambda kv: -kv[1]["cost"]):
         eff = ",".join(f"{k}x{v}" for k, v in g["efforts"].most_common())
-        add(f"  {fp}  n={g['n']:<4} {g['model']:<22} "
+        add(f"  {fp}  n={g['n']:<4} {g['model']:<22} [{g['rail']}] "
             f"cost={_money(g['cost']):<9} cache_hit={g['hit_rate']:.0%} "
             f"stream={g['stream_share']:.0%} effort={eff}")
         add(f"      {g['hint']}")

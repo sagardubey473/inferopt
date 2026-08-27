@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inferopt"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local inference cost optimizer: logging proxy + savings analyzer + replay prover for the Anthropic API"
 requires-python = ">=3.10"
-dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27", "botocore>=1.34"]
 
 [project.scripts]
 inferopt = "inferopt.cli:main"

@@ -17,6 +17,15 @@ PRICES = {  # model-id prefix -> (input $/MTok, output $/MTok)
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-sonnet-4-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # legacy (still common on Bedrock)
+    "claude-opus-4-1": (15.0, 75.0),
+    "claude-opus-4": (15.0, 75.0),
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-3-7-sonnet": (3.0, 15.0),
+    "claude-3-5-sonnet": (3.0, 15.0),
+    "claude-3-5-haiku": (0.8, 4.0),
+    "claude-3-opus": (15.0, 75.0),
+    "claude-3-haiku": (0.25, 1.25),
 }
 
 CACHE_READ_MULT = 0.10
@@ -34,9 +43,17 @@ NO_SAMPLING = {
 
 
 def resolve(model):
-    """Map a request model string (possibly date-suffixed) to a pricing key."""
+    """Map a request model string to a pricing key. Handles first-party ids
+    (date-suffixed or not) and Bedrock ids like
+    'us.anthropic.claude-sonnet-5-v1:0'."""
     if not model:
         return None
+    for pre in ("us.", "eu.", "apac.", "global.", "jp."):
+        if model.startswith(pre):
+            model = model[len(pre):]
+            break
+    if model.startswith("anthropic."):
+        model = model[len("anthropic."):]
     if model in PRICES:
         return model
     best = None
