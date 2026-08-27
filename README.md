@@ -98,14 +98,26 @@ slightly (regional endpoints carry a 10% premium).
   API's render order) is diffed byte-by-byte between consecutive requests;
   the first differing byte is the invalidator.
 
-## Known limitations (v0.2)
+## Replay on Bedrock
+
+`inferopt replay` works on both rails. For Bedrock rows it re-signs with
+the local AWS credential chain (same as the proxy - run it in a
+creds-loaded shell, e.g. `AWS_PROFILE=my-aws-profile`). Model overrides must be
+the full cross-region inference-profile id (`us.anthropic.claude-...`),
+not the bare on-demand id. The judge defaults to the baseline row's own
+model on Bedrock (the incumbent sets the quality bar) - override with
+`--judge-model`.
+
+**Body-storage policy that makes validation work:** run synthetic-input
+sessions with bodies ON (default) so replay/judge have material, and
+client-data sessions with `INFEROPT_STORE_BODIES=0` (metadata-only).
+Validate on synthetic, observe production metadata-only.
+
+## Known limitations (v0.3)
 
 - Rails: Anthropic API + Bedrock. Vertex AI not yet supported.
-- `replay` works on anthropic-rail traffic only for now (Bedrock replay
-  needs signing wiring - ask for it).
-- Bedrock re-signing against real AWS is tested in mock only so far; if
-  you hit `InvalidSignatureException` on a model id with unusual
-  characters, report it.
+- `--effort` override not yet supported for converse-logged rows.
+- Bedrock re-signing validated against real AWS (us-east-1).
 - Claude Code on OAuth (subscription) auth: not the target; instrument
   API-key workloads.
 - `usage` fields are read from responses; requests that fail mid-stream may

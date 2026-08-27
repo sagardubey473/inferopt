@@ -28,6 +28,9 @@ def main():
                     choices=["low", "medium", "high", "xhigh", "max"])
     sx.add_argument("--judge", action="store_true",
                     help="LLM-judge each baseline/candidate pair (costs tokens)")
+    sx.add_argument("--judge-model",
+                    help="judge model override (bedrock default: the baseline "
+                         "row's own model; anthropic default: claude-opus-5)")
     sx.add_argument("--yes", action="store_true",
                     help="skip the cost confirmation prompt")
 
@@ -54,7 +57,8 @@ def main():
     elif args.cmd == "replay":
         from . import replay
         replay.replay(args.callsite, n=args.n, model=args.model,
-                      effort=args.effort, judge=args.judge, yes=args.yes)
+                      effort=args.effort, judge=args.judge, yes=args.yes,
+                      judge_model=args.judge_model)
     elif args.cmd == "purge":
         from . import db
         path = db.DEFAULT_DB

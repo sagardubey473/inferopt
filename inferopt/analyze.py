@@ -169,11 +169,17 @@ def analyze(con, days=30):
             alt_cost = pricing.cost_usd(alt, g["in_t"], g["out_t"],
                                         g["cr"], g["cw"]) * factor
             if monthly_cost - alt_cost > 0.01 * factor:
+                note = ""
+                if (cur_key and cur_key.startswith("claude-sonnet")
+                        and alt == "claude-sonnet-5"):
+                    note = (" - NEWER generation of the same family: cheaper "
+                            "AND more capable; lowest-risk swap on the board")
                 out["tier_whatif"].append({
                     "site": fp, "hint": g["hint"], "model": g["model"],
                     "alt": alt, "monthly_cost": monthly_cost,
                     "alt_monthly_cost": alt_cost,
                     "monthly_savings": monthly_cost - alt_cost,
+                    "note": note,
                 })
 
     # ---- effort observation ----
@@ -234,7 +240,8 @@ def render(out):
         for w in out["tier_whatif"]:
             add(f"  site {w['site']}: {w['model']} {_money(w['monthly_cost'])}/mo"
                 f" -> {w['alt']} {_money(w['alt_monthly_cost'])}/mo"
-                f"  (save {_money(w['monthly_savings'])}/mo)")
+                f"  (save {_money(w['monthly_savings'])}/mo)"
+                + w.get("note", ""))
             add(f"     validate: inferopt replay --callsite {w['site']} "
                 f"--model {w['alt']} --judge")
         add("")
