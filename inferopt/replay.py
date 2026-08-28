@@ -21,6 +21,25 @@ import httpx
 from . import capture, db, pricing
 
 API_VERSION = "2023-06-01"
+_TOOL_RE = re.compile(r"\[tool_use ([^\]]+)\]")
+
+
+def _tool_names(text):
+    return set(_TOOL_RE.findall(text or ""))
+
+
+def _behavioral_check(baseline, candidate):
+    """Deterministic tool-usage comparison - catches what a text judge
+    can't: a candidate that narrates intent instead of invoking tools."""
+    bt, ct = _tool_names(baseline), _tool_names(candidate)
+    if bt and not ct:
+        return (f"baseline invoked tools ({', '.join(sorted(bt))}) but "
+                f"candidate answered in prose without any tool call - "
+                f"functional regression for agentic loops")
+    if bt and ct and not (bt & ct):
+        return (f"tool mismatch: baseline used {sorted(bt)}, candidate "
+                f"used {sorted(ct)}")
+    return None
 DEFAULT_JUDGE_ANTHROPIC = "claude-opus-5"
 
 
@@ -115,10 +134,13 @@ def _judge_prompt(task, resp_a, resp_b):
         "length, verbosity, bullet density, or formatting - more detailed "
         "does not mean better unless the task demands it. A response may be "
         "a serialized tool call ('[tool_use <name>] {json}'); in that case "
-        "judge the correctness and completeness of the field values.\n\n"
+        "judge the correctness and completeness of the field values. A "
+        "response may be TRUNCATED at the character limit: judge only what "
+        "is visible and never assume, infer, or invent content beyond the "
+        "truncation point.\n\n"
         f"TASK (truncated):\n{task[:2000]}\n\n"
-        f"RESPONSE A (truncated):\n{resp_a[:4000]}\n\n"
-        f"RESPONSE B (truncated):\n{resp_b[:4000]}\n\n"
+        f"RESPONSE A (truncated):\n{resp_a[:6000]}\n\n"
+        f"RESPONSE B (truncated):\n{resp_b[:6000]}\n\n"
         "Reply with exactly one line first: "
         "VERDICT: equivalent | a_better | b_better\n"
         "Then one sentence of justification."
@@ -226,7 +248,7 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
             verdict = raw
         return verdict, (text or "").strip()
 
-    pairs, verdicts = [], []
+    pairs, verdicts, mismatches = [], [], 0
     for i, r in enumerate(rows, 1):
         body = json.loads(r["body_json"])
         t0 = time.time()
@@ -235,14 +257,18 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
         if err:
             print(f"  [{i}/{len(rows)}] FAILED: {err}")
             continue
+        behavioral = _behavioral_check(r["response_text"], cand)
+        if behavioral:
+            mismatches += 1
         verdict, reason = "", ""
         if judge:
             verdict, reason = run_judge(r, _first_user_text(body),
                                         r["response_text"], cand, i)
             verdicts.append(verdict)
-        pairs.append((r, cand, verdict, reason, lat))
+        pairs.append((r, cand, verdict, reason, lat, behavioral))
         print(f"  [{i}/{len(rows)}] ok {lat:.1f}s"
-              + (f"  verdict={verdict}" if judge else ""))
+              + (f"  verdict={verdict}" if judge else "")
+              + (f"  BEHAVIORAL MISMATCH: {behavioral}" if behavioral else ""))
 
     tag = (model or "") + (("-" + effort) if effort else "")
     tag = tag.replace("/", "_").replace(":", "_").strip("-") or "same"
@@ -255,7 +281,13 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
             f.write(f"**Judge summary:** {dict(Counter(verdicts))} "
                     f"(blind judge, A/B order alternated per pair; "
                     f"spot-check pairs yourself)\n\n")
-        for r, cand, verdict, reason, lat in pairs:
+        if mismatches:
+            f.write(f"**BEHAVIORAL MISMATCHES: {mismatches}/{len(pairs)} "
+                    f"pairs** - candidate's tool usage diverges from "
+                    f"baseline (see per-pair notes). Treat these as "
+                    f"candidate_worse regardless of judge verdicts: a text "
+                    f"judge cannot fully weigh a skipped tool call.\n\n")
+        for r, cand, verdict, reason, lat, behavioral in pairs:
             f.write(f"## request {r['id']} ({r['model']}, {_rail(r)})\n\n")
             f.write(f"**task (first user msg):**\n\n```\n"
                     f"{_first_user_text(json.loads(r['body_json']))[:1500]}"
@@ -265,10 +297,15 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
             f.write(f"**candidate ({model or r['model']}"
                     f"{', effort=' + effort if effort else ''}, "
                     f"{lat:.1f}s):**\n\n```\n{(cand or '')[:2500]}\n```\n\n")
+            if behavioral:
+                f.write(f"**BEHAVIORAL MISMATCH:** {behavioral}\n\n")
             if verdict:
                 f.write(f"**judge:** {verdict}\n\n> {reason}\n\n")
     print(f"\nwrote {path}")
     if verdicts:
         from collections import Counter
         print(f"judge summary: {dict(Counter(verdicts))}")
+    if mismatches:
+        print(f"BEHAVIORAL MISMATCHES: {mismatches}/{len(pairs)} pairs - "
+              f"treat as candidate_worse regardless of judge verdicts")
     print("spot-check the pairs yourself before changing anything in prod.")

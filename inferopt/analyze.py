@@ -172,8 +172,11 @@ def analyze(con, days=30):
                 note = ""
                 if (cur_key and cur_key.startswith("claude-sonnet")
                         and alt == "claude-sonnet-5"):
-                    note = (" - NEWER generation of the same family: cheaper "
-                            "AND more capable; lowest-risk swap on the board")
+                    note = (" - newer generation of the same family "
+                            "(cheaper, often better): best candidate to TEST "
+                            "first, but validate with replay before shipping "
+                            "- generation upgrades can still regress on "
+                            "structured-extraction tasks")
                 out["tier_whatif"].append({
                     "site": fp, "hint": g["hint"], "model": g["model"],
                     "alt": alt, "monthly_cost": monthly_cost,

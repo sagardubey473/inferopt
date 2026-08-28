@@ -124,6 +124,16 @@ instructed to grade tool-call field values on substance. The judge is
 blind (not told which side is the incumbent) and A/B order alternates per
 pair to cancel position and verbosity bias.
 
+## Behavioral checks (v0.5)
+
+Before the LLM judge runs, replay does a deterministic tool-usage
+comparison per pair: a candidate that narrates intent ("I'll research...")
+instead of invoking the tools the baseline invoked is flagged as a
+BEHAVIORAL MISMATCH - a functional regression for agentic loops that text
+judges reliably miss. Mismatches are counted separately and should be
+treated as candidate_worse regardless of judge verdicts. The judge is also
+explicitly told never to assume content beyond a truncation point.
+
 ## Known limitations (v0.4)
 
 - Rails: Anthropic API + Bedrock. Vertex AI not yet supported.
