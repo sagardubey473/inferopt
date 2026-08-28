@@ -79,7 +79,9 @@ def summarize_group(rs):
     g["cost"] = sum(r["cost_usd"] or 0 for r in rs)
     g["unknown_cost"] = sum(1 for r in rs if r["cost_usd"] is None)
     g["stream_share"] = sum(r["stream"] or 0 for r in rs) / len(rs)
-    g["uses_cache"] = any(r["uses_cache_control"] for r in rs)
+    g["uses_cache"] = (any(r["uses_cache_control"] for r in rs)
+                       or any((r["cache_read_tokens"] or 0)
+                              or (r["cache_write_tokens"] or 0) for r in rs))
     g["efforts"] = Counter(r["effort"] or "default(high)" for r in rs)
     prefixes = Counter(r["prefix"] or "" for r in rs)
     mc_prefix, mc_n = prefixes.most_common(1)[0]
@@ -163,9 +165,15 @@ def analyze(con, days=30):
                 "detail": (
                     f"~{g['prefix_tokens']:,} stable prefix tokens re-billed at "
                     f"full price on every call ({g['n']} calls observed, prefix "
-                    f"identical in {g['prefix_share']:.0%} of them). Add "
-                    f"cache_control to the system prompt / tools block; cache "
-                    f"reads bill at 10% of input. No output changes at all."),
+                    f"identical in {g['prefix_share']:.0%} of them). "
+                    + ("This provider caches automatically on a byte-stable "
+                       "prefix, but no cached tokens were reported - check "
+                       "that the prefix meets the minimum length and that "
+                       "nothing volatile precedes it."
+                       if g.get("rail") == "openai" else
+                       "Add cache_control to the system prompt / tools "
+                       "block; cache reads bill at 10% of input.")
+                    + " No output changes at all."),
             })
 
         # ---- Lever 1b: caching on but broken ----
@@ -186,8 +194,11 @@ def analyze(con, days=30):
                  "monthly_savings": max(save, 0),
                  "confidence": "high (arithmetic)",
                  "detail": (
-                     f"cache_control is set but hit rate is "
-                     f"{g['hit_rate']:.1%} across {g['n']} calls.")}
+                     ("prompt caching is active on this provider but the hit "
+                      "rate is only "
+                      if g.get("rail") == "openai" else
+                      "cache_control is set but hit rate is ")
+                     + f"{g['hit_rate']:.1%} across {g['n']} calls.")}
             if div:
                 i, pa, pb = div
                 f["detail"] += (
@@ -198,8 +209,42 @@ def analyze(con, days=30):
                     f"breakpoint (render order: tools -> system -> messages).")
             out["findings"].append(f)
 
-        # ---- Lever 2: batch candidates ----
-        if g["stream_share"] <= 0.1 and g["n"] >= 3 and monthly_cost > 0:
+        # ---- Lever 1c: unstable prefix (never caches, and can't) ----
+        elif (g["n"] >= 3 and g["prefix_share"] < 0.9
+              and g["prefix_tokens"] >= MIN_CACHEABLE_TOKENS
+              and g["hit_rate"] < 0.2):
+            div = None
+            for x, y in zip(rs, rs[1:]):
+                if (x["prefix"] or "") != (y["prefix"] or ""):
+                    i = first_divergence(x["prefix"] or "", y["prefix"] or "")
+                    if i is not None:
+                        div = (i, x["prefix"], y["prefix"])
+                        break
+            save = 0.9 * g["prefix_tokens"] * price_in * monthly_reqs / 1e6
+            levers[fp]["cache"] = True
+            f = {"kind": "unstable-prefix", "site": fp, "hint": g["hint"],
+                 "monthly_savings": save, "confidence": "high (arithmetic)",
+                 "detail": (
+                     f"~{g['prefix_tokens']:,} tokens of otherwise-reusable "
+                     f"prefix, but it differs between calls "
+                     f"({g['prefix_share']:.0%} identical) and the observed "
+                     f"cache hit rate is {g['hit_rate']:.1%}. Prompt caching "
+                     f"is a strict prefix match, so a single varying byte "
+                     f"near the front re-bills the whole prefix every call.")}
+            if div:
+                i, pa, pb = div
+                f["detail"] += (
+                    f"\n    First divergence at byte {i:,}:"
+                    f"\n      A: {_ctx(pa, i)}"
+                    f"\n      B: {_ctx(pb, i)}"
+                    f"\n    Move that value out of the prefix (below the "
+                    f"last cache breakpoint, or into a later message).")
+            out["findings"].append(f)
+
+        # ---- Lever 2: batch candidates (first-party API / Bedrock only;
+        # OpenAI-compatible gateways have no equivalent 50%-off batch tier)
+        if (g.get("rail") != "openai" and g["stream_share"] <= 0.1
+                and g["n"] >= 3 and monthly_cost > 0):
             levers[fp]["batch"] = True
             out["findings"].append({
                 "kind": "batch-candidate", "site": fp, "hint": g["hint"],
@@ -214,7 +259,12 @@ def analyze(con, days=30):
             })
 
         # ---- Lever 3: tier what-if (needs replay validation) ----
+        # Only for first-party/Bedrock ids - suggesting "claude-haiku-4-5"
+        # to a caller using "anthropic/claude-sonnet-5" would be a broken
+        # model string. Cross-format tier mapping is not wired up yet.
         cur_key = pricing.resolve(g["model"])
+        if not pricing.is_first_party(g["model"]):
+            continue
         for alt in pricing.CHEAPER_TIERS:
             if alt == cur_key:
                 continue

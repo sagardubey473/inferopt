@@ -26,6 +26,8 @@ BEDROCK_UPSTREAM = os.environ.get(
     f"https://bedrock-runtime.{BEDROCK_REGION}.amazonaws.com")
 _BEDROCK_ACTIONS = {"invoke", "converse",
                     "invoke-with-response-stream", "converse-stream"}
+OPENAI_UPSTREAM = os.environ.get("INFEROPT_OPENAI_UPSTREAM",
+                                 "https://openrouter.ai/api")
 
 # hop-by-hop / recomputed headers we never forward
 _REQ_DROP = {"host", "content-length", "connection", "accept-encoding",
@@ -165,6 +167,76 @@ async def _relay_stream(url, headers, raw, body):
                              headers=resp_headers)
 
 
+async def _relay_openai(request, path, raw):
+    """OpenAI-compatible rail: forward verbatim (auth is a bearer header,
+    nothing to re-sign) and instrument chat completions."""
+    from . import openai_compat as oc
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in _REQ_DROP}
+    url = OPENAI_UPSTREAM + "/" + path
+    if request.url.query:
+        url += "?" + request.url.query
+
+    instrument = path.rstrip("/").endswith("chat/completions")
+    body = {}
+    if instrument:
+        try:
+            body = json.loads(raw)
+        except Exception:
+            instrument = False
+    fp_body = oc.pseudo_body(body) if instrument else {}
+    client = _state["client"]
+    t0 = time.time()
+
+    if instrument and body.get("stream"):
+        req = client.build_request("POST", url, headers=headers, content=raw)
+        upstream = await client.send(req, stream=True)
+        state = {"input": 0, "output": 0, "cr": 0, "cw": 0, "text": [],
+                 "tools": []}
+
+        async def gen():
+            buf = b""
+            try:
+                async for chunk in upstream.aiter_raw():
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        oc.apply_stream_event(line, state)
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                _insert(body, raw, upstream.status_code, body.get("model"),
+                        state["input"], state["output"], state["cr"],
+                        state["cw"], (time.time() - t0) * 1000,
+                        capture.stream_final_text(state),
+                        stream=1, rail="openai", fp_body=fp_body)
+
+        resp_headers = {k: v for k, v in upstream.headers.items()
+                        if k.lower() not in _RESP_DROP}
+        return StreamingResponse(gen(), status_code=upstream.status_code,
+                                 headers=resp_headers)
+
+    r = await client.request(request.method, url, headers=headers,
+                             content=raw)
+    latency = (time.time() - t0) * 1000
+    if instrument:
+        i = o = cr = cw = 0
+        text = None
+        model = body.get("model")
+        try:
+            data = r.json()
+            model = data.get("model") or model
+            i, o, cr, cw, text = oc.extract_response(data)
+        except Exception:
+            pass
+        _insert(body, raw, r.status_code, model, i, o, cr, cw, latency, text,
+                stream=0, rail="openai", fp_body=fp_body)
+    resp_headers = {k: v for k, v in r.headers.items()
+                    if k.lower() not in _RESP_DROP}
+    return Response(content=r.content, status_code=r.status_code,
+                    headers=resp_headers)
+
+
 async def _relay_bedrock(request, path, raw):
     from . import bedrock as br
     parts = path.split("/")
@@ -252,6 +324,9 @@ async def relay(request: Request, path: str):
     raw = await request.body()
     if path.startswith(("model/", "async-invoke", "guardrail")):
         return await _relay_bedrock(request, path, raw)
+    if "chat/completions" in path or path.startswith(("v1/models",
+                                                      "api/v1/")):
+        return await _relay_openai(request, path, raw)
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _REQ_DROP}
     url = "/" + path
@@ -288,9 +363,13 @@ def run(port=8484):
     print(f"[inferopt]   anthropic rail -> {UPSTREAM}")
     print(f"[inferopt]   bedrock rail   -> {BEDROCK_UPSTREAM} "
           f"(region {BEDROCK_REGION}, re-signed with local AWS creds)")
+    print(f"[inferopt]   openai rail    -> {OPENAI_UPSTREAM} "
+          f"(/v1/chat/completions; pricing from the OpenRouter catalog)")
     print(f"[inferopt] logging to {db.DEFAULT_DB}"
           + ("" if STORE_BODIES else "  (metadata only, bodies not stored)"))
     print(f"[inferopt] point your code at it with:")
     print(f"[inferopt]   export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
     print(f"[inferopt]   export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:{port}")
+    print(f"[inferopt]   OpenAI-compatible base url: "
+          f"http://127.0.0.1:{port}/v1")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

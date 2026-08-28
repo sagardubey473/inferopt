@@ -124,6 +124,39 @@ instructed to grade tool-call field values on substance. The judge is
 blind (not told which side is the incumbent) and A/B order alternates per
 pair to cancel position and verbosity bias.
 
+## OpenAI-compatible rail (v0.8)
+
+Third rail for any OpenAI-compatible endpoint - OpenRouter, Together,
+vLLM, LiteLLM, local servers. Auth is a bearer header, so requests
+forward verbatim with nothing to re-sign:
+
+```bash
+export INFEROPT_OPENAI_UPSTREAM=https://openrouter.ai/api   # default
+# point your client's base_url at:  http://127.0.0.1:8484/v1
+```
+
+Pricing for ~400 models comes live from OpenRouter's public catalog
+(cached 24h in `~/.inferopt/`), including per-model cache read/write
+rates, so cost math works without hardcoding anything. Free models
+(`:free`) price at zero, which makes zero-budget profiling possible.
+
+Rail-aware analysis: OpenAI-style providers cache **automatically** on a
+byte-stable prefix (no `cache_control` field), so the advice changes
+accordingly, and the Batch API finding is suppressed on this rail since
+there is no equivalent 50%-off tier. Tier what-if is limited to
+first-party/Bedrock ids - suggesting `claude-haiku-4-5` to a caller
+using `anthropic/claude-sonnet-5` would emit a broken model string, and
+cross-format tier mapping isn't wired up yet.
+
+**New finding type - `unstable-prefix`:** a call site with a big
+reusable prefix that nonetheless differs between calls, so caching can
+never engage. Previously such sites fell through every branch (the
+enable-caching check needs a *stable* prefix; broken-cache needs caching
+already active). This is the classic coding-agent failure: a timestamp
+or session id injected near the front of the system prompt re-bills
+thousands of tokens every single turn. The report localizes the exact
+diverging byte.
+
 ## The validation ledger (v0.7)
 
 Replay evidence is recorded in a local `validations` table and fed back

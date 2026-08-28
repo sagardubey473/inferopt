@@ -42,6 +42,15 @@ NO_SAMPLING = {
 }
 
 
+def catalog_rates(model):
+    """Full rate card from the OpenRouter catalog (openai rail), $/MTok."""
+    try:
+        from . import catalog
+        return catalog.lookup(model)
+    except Exception:
+        return None
+
+
 def resolve(model):
     """Map a request model string to a pricing key. Handles first-party ids
     (date-suffixed or not) and Bedrock ids like
@@ -65,17 +74,38 @@ def resolve(model):
 
 def rates(model):
     key = resolve(model)
-    return PRICES.get(key) if key else None
+    r = PRICES.get(key) if key else None
+    if r is not None:
+        return r
+    c = catalog_rates(model)
+    if c and c.get("in") is not None:
+        return (c["in"], c.get("out") or 0.0)
+    return None
+
+
+def is_first_party(model):
+    """True when the id maps to a hardcoded first-party/Bedrock price."""
+    key = resolve(model)
+    return bool(key and key in PRICES)
 
 
 def cost_usd(model, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0):
     r = rates(model)
-    if r is None:
+    if r is not None:
+        inp, out = r
+        return (
+            input_tokens * inp
+            + output_tokens * out
+            + cache_read * inp * CACHE_READ_MULT
+            + cache_write * inp * CACHE_WRITE_MULT
+        ) / 1e6
+    c = catalog_rates(model)
+    if c is None or c.get("in") is None:
         return None
-    inp, out = r
-    return (
-        input_tokens * inp
-        + output_tokens * out
-        + cache_read * inp * CACHE_READ_MULT
-        + cache_write * inp * CACHE_WRITE_MULT
-    ) / 1e6
+    inp, out = c["in"], c["out"] or 0.0
+    cr = c.get("cache_read")
+    cw = c.get("cache_write")
+    cr = inp * CACHE_READ_MULT if cr is None else cr
+    cw = inp * CACHE_WRITE_MULT if cw is None else cw
+    return (input_tokens * inp + output_tokens * out
+            + cache_read * cr + cache_write * cw) / 1e6
