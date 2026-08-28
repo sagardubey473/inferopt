@@ -124,6 +124,18 @@ instructed to grade tool-call field values on substance. The judge is
 blind (not told which side is the incumbent) and A/B order alternates per
 pair to cancel position and verbosity bias.
 
+## Savings compose, they do not add (v0.6)
+
+Per-lever figures in the FINDINGS list are **standalone** - what that one
+lever saves if applied alone. Batching a cheaper model saves 50% of the
+*already reduced* bill, so summing levers overstates savings badly (on one
+real call site: $340 summed vs $247 actual, a 37% overstatement). The
+report's COMBINED section composes levers multiplicatively and splits the
+total two ways: **zero-quality-risk** (caching + batch, arithmetic only)
+and **if validated tier swaps also applied** (needs replay evidence).
+Quote the first number to a customer; quote the second only with replay
+artifacts attached.
+
 ## Behavioral checks (v0.5)
 
 Before the LLM judge runs, replay does a deterministic tool-usage

@@ -74,6 +74,31 @@ def summarize_group(rs):
     return g
 
 
+def _config_monthly(g, factor, model=None, cache_fix=False, batch=False):
+    """Monthly cost for a call site under a combination of levers.
+
+    Levers compose multiplicatively, not additively: batching a cheaper
+    model saves 50% of the *already reduced* bill.
+    """
+    rates = pricing.rates(model or g["model"])
+    if rates is None:
+        return None
+    p_in, p_out = rates
+    n = g["n"]
+    billable_in = g["in_t"] + g["cw"]          # full-price input tokens
+    cached_in = g["cr"]                        # already at 0.1x
+    if cache_fix:
+        movable = min(g["prefix_tokens"] * n, billable_in)
+        billable_in -= movable
+        cached_in += movable
+    cost = (billable_in * p_in
+            + cached_in * p_in * pricing.CACHE_READ_MULT
+            + g["out_t"] * p_out) / 1e6
+    if batch:
+        cost *= pricing.BATCH_MULT
+    return cost * factor
+
+
 def analyze(con, days=30):
     rows, ok, groups = load(con, days)
     out = {"days": days, "n_total": len(rows), "n_ok": len(ok),
@@ -90,9 +115,11 @@ def analyze(con, days=30):
     out["spend"] = sum(r["cost_usd"] or 0 for r in ok)
     out["monthly_spend"] = out["spend"] * factor
 
+    levers = {}
     for fp, rs in groups.items():
         g = summarize_group(rs)
         out["groups"][fp] = g
+        levers[fp] = {"cache": False, "batch": False, "tier": None}
         rates = pricing.rates(g["model"])
         if rates is None:
             out["notes"].append(
@@ -107,6 +134,7 @@ def analyze(con, days=30):
                 and g["prefix_share"] >= 0.9
                 and g["prefix_tokens"] >= MIN_CACHEABLE_TOKENS):
             save = 0.9 * g["prefix_tokens"] * price_in * monthly_reqs / 1e6
+            levers[fp]["cache"] = True
             out["findings"].append({
                 "kind": "enable-caching", "site": fp, "hint": g["hint"],
                 "monthly_savings": save, "confidence": "high (arithmetic)",
@@ -131,6 +159,7 @@ def analyze(con, days=30):
                             (g["in_t"] + g["cr"] + g["cw"]) // max(g["n"], 1))
             save = 0.9 * cacheable * price_in * monthly_reqs / 1e6 \
                 - g["cr"] * factor * price_in * pricing.CACHE_READ_MULT / 1e6
+            levers[fp]["cache"] = True
             f = {"kind": "broken-cache", "site": fp, "hint": g["hint"],
                  "monthly_savings": max(save, 0),
                  "confidence": "high (arithmetic)",
@@ -149,6 +178,7 @@ def analyze(con, days=30):
 
         # ---- Lever 2: batch candidates ----
         if g["stream_share"] <= 0.1 and g["n"] >= 3 and monthly_cost > 0:
+            levers[fp]["batch"] = True
             out["findings"].append({
                 "kind": "batch-candidate", "site": fp, "hint": g["hint"],
                 "monthly_savings": monthly_cost * pricing.BATCH_MULT,
@@ -184,6 +214,9 @@ def analyze(con, days=30):
                     "monthly_savings": monthly_cost - alt_cost,
                     "note": note,
                 })
+                cur_best = levers[fp]["tier"]
+                if cur_best is None or (monthly_cost - alt_cost) > cur_best[1]:
+                    levers[fp]["tier"] = (alt, monthly_cost - alt_cost)
 
     # ---- effort observation ----
     if all(set(g["efforts"]) == {"default(high)"}
@@ -194,6 +227,38 @@ def analyze(con, days=30):
             "'medium'/'low' with fewer thinking+output tokens; validate with "
             "`inferopt replay --effort low`.")
 
+    out["combined"] = []
+    for fp, lv in levers.items():
+        g = out["groups"][fp]
+        if not (lv["cache"] or lv["batch"] or lv["tier"]):
+            continue
+        base = _config_monthly(g, factor)
+        if base is None:
+            continue
+        applied = []
+        if lv["cache"]:
+            applied.append("caching")
+        if lv["batch"]:
+            applied.append("batch")
+        # safe = levers with no quality risk; tier needs replay validation
+        safe = _config_monthly(g, factor, cache_fix=lv["cache"],
+                               batch=lv["batch"])
+        row = {"site": fp, "hint": g["hint"], "baseline": base,
+               "safe_levers": applied, "safe_monthly": safe,
+               "safe_savings": base - (safe if safe is not None else base)}
+        if lv["tier"]:
+            alt, _ = lv["tier"]
+            full = _config_monthly(g, factor, model=alt,
+                                   cache_fix=lv["cache"], batch=lv["batch"])
+            row["tier_alt"] = alt
+            row["full_monthly"] = full
+            row["full_savings"] = base - (full if full is not None else base)
+        out["combined"].append(row)
+    out["combined"].sort(key=lambda r: -(r.get("full_savings")
+                                         or r["safe_savings"]))
+    out["total_safe_savings"] = sum(r["safe_savings"] for r in out["combined"])
+    out["total_full_savings"] = sum(r.get("full_savings", r["safe_savings"])
+                                    for r in out["combined"])
     out["findings"].sort(key=lambda f: -f["monthly_savings"])
     out["tier_whatif"].sort(key=lambda f: -f["monthly_savings"])
     return out
@@ -227,7 +292,28 @@ def render(out):
             f"stream={g['stream_share']:.0%} effort={eff}")
         add(f"      {g['hint']}")
     add("")
+    if out.get("combined"):
+        add("COMBINED SAVINGS PER CALL SITE (levers compose, they do NOT add)")
+        add("-" * 60)
+        for r in out["combined"]:
+            lv = "+".join(r["safe_levers"]) or "none"
+            add(f"  {r['site']}  baseline {_money(r['baseline'])}/mo")
+            add(f"      zero-quality-risk ({lv}): "
+                f"-> {_money(r['safe_monthly'])}/mo  "
+                f"save {_money(r['safe_savings'])}/mo")
+            if "full_savings" in r:
+                add(f"      + tier swap to {r['tier_alt']} (NEEDS replay "
+                    f"validation): -> {_money(r['full_monthly'])}/mo  "
+                    f"save {_money(r['full_savings'])}/mo")
+        add("")
+        add(f"  TOTAL zero-quality-risk savings: "
+            f"{_money(out['total_safe_savings'])}/mo")
+        add(f"  TOTAL if validated tier swaps also applied: "
+            f"{_money(out['total_full_savings'])}/mo")
+        add("")
     add("FINDINGS (ranked by estimated monthly savings)")
+    add("  NOTE: each figure below is STANDALONE - what that one lever saves")
+    add("  if applied alone. Do NOT sum them; see COMBINED above.")
     add("-" * 60)
     if not out["findings"]:
         add("  none yet - need >=3 requests per call site to fire heuristics")
