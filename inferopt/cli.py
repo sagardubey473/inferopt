@@ -34,6 +34,17 @@ def main():
     sx.add_argument("--yes", action="store_true",
                     help="skip the cost confirmation prompt")
 
+    sd = sub.add_parser("decide",
+                        help="record a GO/NO-GO on a validated tier swap")
+    sd.add_argument("--callsite", required=True)
+    sd.add_argument("--model", required=True)
+    g = sd.add_mutually_exclusive_group(required=True)
+    g.add_argument("--go", action="store_true")
+    g.add_argument("--no-go", dest="no_go", action="store_true")
+    sd.add_argument("--note", default="")
+
+    sub.add_parser("ledger", help="show recorded validation decisions")
+
     sub.add_parser("purge", help="delete the local database")
 
     args = p.parse_args()
@@ -59,6 +70,43 @@ def main():
         replay.replay(args.callsite, n=args.n, model=args.model,
                       effort=args.effort, judge=args.judge, yes=args.yes,
                       judge_model=args.judge_model)
+    elif args.cmd == "decide":
+        import time
+        from . import db
+        con = db.connect()
+        decision = "go" if args.go else "no-go"
+        row = con.execute(
+            "SELECT * FROM validations WHERE callsite=? AND alt_model=? "
+            "ORDER BY ts DESC LIMIT 1", (args.callsite, args.model)).fetchone()
+        if row is None:
+            print(f"warning: no replay evidence on record for {args.model} "
+                  f"at {args.callsite}. Recording the decision anyway, but "
+                  f"run `inferopt replay --judge` first if you haven't.")
+            con.execute(
+                "INSERT INTO validations (ts,callsite,alt_model,n,decision,"
+                "note) VALUES (?,?,?,0,?,?)",
+                (time.time(), args.callsite, args.model, decision,
+                 args.note or "decision recorded without replay evidence"))
+        else:
+            con.execute("UPDATE validations SET decision=?, note=? WHERE id=?",
+                        (decision, args.note or row["note"], row["id"]))
+        con.commit()
+        print(f"recorded {decision.upper()}: {args.model} at {args.callsite}")
+        print("the report's COMBINED section will now honor this.")
+    elif args.cmd == "ledger":
+        from . import db
+        con = db.connect()
+        rows = con.execute(
+            "SELECT * FROM validations ORDER BY ts DESC").fetchall()
+        if not rows:
+            print("no validations recorded yet")
+            return
+        for r in rows:
+            print(f"{(r['decision'] or '?').upper():<8} {r['callsite']}  "
+                  f"{r['alt_model']}  n={r['n']} "
+                  f"judge {r['equivalent']}e/{r['better']}b/{r['worse']}w"
+                  + (f"  MISMATCHES={r['mismatches']}" if r["mismatches"]
+                     else "") + (f"  ({r['note']})" if r["note"] else ""))
     elif args.cmd == "purge":
         from . import db
         path = db.DEFAULT_DB

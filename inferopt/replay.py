@@ -308,4 +308,26 @@ def replay(callsite, n=5, model=None, effort=None, judge=False, yes=False,
     if mismatches:
         print(f"BEHAVIORAL MISMATCHES: {mismatches}/{len(pairs)} pairs - "
               f"treat as candidate_worse regardless of judge verdicts")
+
+    if model:
+        from collections import Counter
+        c = Counter(verdicts)
+        auto = "no-go" if mismatches else "untested"
+        con.execute(
+            "INSERT INTO validations (ts,callsite,alt_model,n,equivalent,"
+            "better,worse,mismatches,decision,note) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), callsite, model, len(pairs),
+             c.get("equivalent", 0), c.get("candidate_better", 0),
+             c.get("candidate_worse", 0), mismatches, auto,
+             "auto: behavioral mismatch" if mismatches else
+             "evidence recorded; run `inferopt decide` after spot-check"))
+        con.commit()
+        if mismatches:
+            print(f"\nledger: recorded {model} on {callsite} as NO-GO "
+                  f"(behavioral mismatch is disqualifying)")
+        else:
+            print(f"\nledger: evidence recorded. After you spot-check the "
+                  f"pairs, record the call:\n  inferopt decide --callsite "
+                  f"{callsite} --model {model} --go   (or --no-go)")
     print("spot-check the pairs yourself before changing anything in prod.")

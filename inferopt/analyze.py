@@ -34,6 +34,28 @@ def _ctx(s, i, span=45):
     return ("..." if lo else "") + seg.replace("\n", " ") + "..."
 
 
+def load_validations(con):
+    """Latest decision per (callsite, alt_model)."""
+    out = {}
+    try:
+        rows = con.execute(
+            "SELECT * FROM validations ORDER BY ts").fetchall()
+    except Exception:
+        return out
+    for r in rows:
+        out[(r["callsite"], r["alt_model"])] = dict(r)
+    return out
+
+
+def _val_status(vals, site, alt):
+    """Match a ledger entry to a pricing key (ledger stores full profile ids
+    like us.anthropic.claude-haiku-4-5-...; findings use pricing keys)."""
+    for (s, m), v in vals.items():
+        if s == site and pricing.resolve(m) == pricing.resolve(alt):
+            return v
+    return None
+
+
 def load(con, days):
     cutoff = time.time() - days * 86400
     rows = [dict(r) for r in con.execute(
@@ -227,6 +249,23 @@ def analyze(con, days=30):
             "'medium'/'low' with fewer thinking+output tokens; validate with "
             "`inferopt replay --effort low`.")
 
+    vals = load_validations(con)
+    out["validations"] = [
+        {"site": s, "model": m, **{k: v[k] for k in
+         ("n", "equivalent", "better", "worse", "mismatches", "decision")}}
+        for (s, m), v in vals.items()]
+
+    for w in out["tier_whatif"]:
+        v = _val_status(vals, w["site"], w["alt"])
+        if v is None:
+            w["validation"] = "untested"
+        else:
+            w["validation"] = v["decision"]
+            w["evidence"] = (f"n={v['n']} judge {v['equivalent']}e/"
+                             f"{v['better']}b/{v['worse']}w"
+                             + (f", {v['mismatches']} behavioral mismatches"
+                                if v["mismatches"] else ""))
+
     out["combined"] = []
     for fp, lv in levers.items():
         g = out["groups"][fp]
@@ -246,19 +285,33 @@ def analyze(con, days=30):
         row = {"site": fp, "hint": g["hint"], "baseline": base,
                "safe_levers": applied, "safe_monthly": safe,
                "safe_savings": base - (safe if safe is not None else base)}
-        if lv["tier"]:
-            alt, _ = lv["tier"]
+        # pick the tier to feature: a validated GO wins; never feature a
+        # NO-GO just because it is cheapest.
+        candidates = [w for w in out["tier_whatif"] if w["site"] == fp]
+        go = [w for w in candidates if w.get("validation") == "go"]
+        untested = [w for w in candidates
+                    if w.get("validation") == "untested"]
+        excluded = [w["alt"] for w in candidates
+                    if w.get("validation") == "no-go"]
+        pick = (go[0] if go else (untested[0] if untested else None))
+        row["excluded_tiers"] = excluded
+        if pick:
+            alt = pick["alt"]
             full = _config_monthly(g, factor, model=alt,
                                    cache_fix=lv["cache"], batch=lv["batch"])
             row["tier_alt"] = alt
+            row["tier_validation"] = pick.get("validation", "untested")
             row["full_monthly"] = full
             row["full_savings"] = base - (full if full is not None else base)
         out["combined"].append(row)
     out["combined"].sort(key=lambda r: -(r.get("full_savings")
                                          or r["safe_savings"]))
     out["total_safe_savings"] = sum(r["safe_savings"] for r in out["combined"])
-    out["total_full_savings"] = sum(r.get("full_savings", r["safe_savings"])
-                                    for r in out["combined"])
+    out["total_validated_savings"] = sum(
+        r["full_savings"] if r.get("tier_validation") == "go"
+        else r["safe_savings"] for r in out["combined"])
+    out["total_potential_savings"] = sum(
+        r.get("full_savings", r["safe_savings"]) for r in out["combined"])
     out["findings"].sort(key=lambda f: -f["monthly_savings"])
     out["tier_whatif"].sort(key=lambda f: -f["monthly_savings"])
     return out
@@ -302,14 +355,23 @@ def render(out):
                 f"-> {_money(r['safe_monthly'])}/mo  "
                 f"save {_money(r['safe_savings'])}/mo")
             if "full_savings" in r:
-                add(f"      + tier swap to {r['tier_alt']} (NEEDS replay "
-                    f"validation): -> {_money(r['full_monthly'])}/mo  "
+                vs = r.get("tier_validation", "untested")
+                label = {"go": "VALIDATED GO",
+                         "untested": "NEEDS replay validation"}.get(vs, vs)
+                add(f"      + tier swap to {r['tier_alt']} ({label}): "
+                    f"-> {_money(r['full_monthly'])}/mo  "
                     f"save {_money(r['full_savings'])}/mo")
+            if r.get("excluded_tiers"):
+                add(f"      (excluded, validated NO-GO: "
+                    f"{', '.join(r['excluded_tiers'])})")
         add("")
         add(f"  TOTAL zero-quality-risk savings: "
             f"{_money(out['total_safe_savings'])}/mo")
-        add(f"  TOTAL if validated tier swaps also applied: "
-            f"{_money(out['total_full_savings'])}/mo")
+        add(f"  TOTAL defensible today (zero-risk + VALIDATED tiers): "
+            f"{_money(out['total_validated_savings'])}/mo")
+        add(f"  TOTAL potential if every untested tier swap passed: "
+            f"{_money(out['total_potential_savings'])}/mo  "
+            f"<- do not quote this to anyone")
         add("")
     add("FINDINGS (ranked by estimated monthly savings)")
     add("  NOTE: each figure below is STANDALONE - what that one lever saves")
@@ -327,10 +389,15 @@ def render(out):
         add("TIER WHAT-IF (requires quality validation via `inferopt replay`)")
         add("-" * 60)
         for w in out["tier_whatif"]:
+            vs = w.get("validation", "untested")
+            mark = {"go": "  [VALIDATED GO]", "no-go": "  [VALIDATED NO-GO]",
+                    "untested": ""}.get(vs, f"  [{vs}]")
             add(f"  site {w['site']}: {w['model']} {_money(w['monthly_cost'])}/mo"
                 f" -> {w['alt']} {_money(w['alt_monthly_cost'])}/mo"
-                f"  (save {_money(w['monthly_savings'])}/mo)"
-                + w.get("note", ""))
+                f"  (save {_money(w['monthly_savings'])}/mo){mark}"
+                + ("" if vs != "untested" else w.get("note", "")))
+            if w.get("evidence"):
+                add(f"     evidence: {w['evidence']}")
             add(f"     validate: inferopt replay --callsite {w['site']} "
                 f"--model {w['alt']} --judge")
         add("")

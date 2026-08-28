@@ -18,6 +18,14 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 CREATE INDEX IF NOT EXISTS idx_callsite ON requests(callsite);
 CREATE INDEX IF NOT EXISTS idx_ts ON requests(ts);
+CREATE TABLE IF NOT EXISTS validations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL, callsite TEXT, alt_model TEXT, n INTEGER,
+  equivalent INTEGER DEFAULT 0, better INTEGER DEFAULT 0,
+  worse INTEGER DEFAULT 0, mismatches INTEGER DEFAULT 0,
+  decision TEXT, note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_val ON validations(callsite, alt_model);
 """
 
 

@@ -124,6 +124,30 @@ instructed to grade tool-call field values on substance. The judge is
 blind (not told which side is the incumbent) and A/B order alternates per
 pair to cancel position and verbosity bias.
 
+## The validation ledger (v0.7)
+
+Replay evidence is recorded in a local `validations` table and fed back
+into the report. A replay with any behavioral mismatch is auto-recorded
+NO-GO; otherwise it records the judge counts and asks you to make the
+call after spot-checking:
+
+```bash
+inferopt decide --callsite <fp> --model <model> --go     # or --no-go
+inferopt ledger                                          # what's decided
+```
+
+The report honors it: the COMBINED section features a **validated GO**
+tier when one exists, never features a validated NO-GO (it lists those as
+excluded), and the tier what-if table is annotated `[VALIDATED GO]` /
+`[VALIDATED NO-GO]` with the judge/mismatch evidence inline.
+
+Three totals, deliberately: **zero-quality-risk** (arithmetic levers
+only), **defensible today** (zero-risk + validated tier swaps - this is
+the number you quote), and **potential if every untested swap passed**
+(marked do-not-quote). Without this, the report defaults to whichever
+tier is cheapest, which is exactly the model most likely to fail
+validation.
+
 ## Savings compose, they do not add (v0.6)
 
 Per-lever figures in the FINDINGS list are **standalone** - what that one
