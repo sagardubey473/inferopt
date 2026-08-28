@@ -123,7 +123,7 @@ def _config_monthly(g, factor, model=None, cache_fix=False, batch=False):
     return cost * factor
 
 
-def analyze(con, days=30):
+def analyze(con, days=30, price_as=None):
     rows, ok, groups = load(con, days)
     out = {"days": days, "n_total": len(rows), "n_ok": len(ok),
            "groups": {}, "findings": [], "tier_whatif": [], "notes": []}
@@ -137,11 +137,27 @@ def analyze(con, days=30):
     out["window_days"] = window_days
     out["factor"] = factor
     out["spend"] = sum(r["cost_usd"] or 0 for r in ok)
+    if price_as:
+        out["spend"] = sum(
+            pricing.cost_usd(price_as, r["input_tokens"] or 0,
+                             r["output_tokens"] or 0,
+                             r["cache_read_tokens"] or 0,
+                             r["cache_write_tokens"] or 0) or 0 for r in ok)
     out["monthly_spend"] = out["spend"] * factor
 
     levers = {}
+    out["price_as"] = price_as
     for fp, rs in groups.items():
         g = summarize_group(rs)
+        if price_as:
+            g["real_model"] = g["model"]
+            g["model"] = price_as
+            g["cost"] = sum(
+                pricing.cost_usd(price_as, r["input_tokens"] or 0,
+                                 r["output_tokens"] or 0,
+                                 r["cache_read_tokens"] or 0,
+                                 r["cache_write_tokens"] or 0) or 0
+                for r in rs)
         out["groups"][fp] = g
         levers[fp] = {"cache": False, "batch": False, "tier": None}
         rates = pricing.rates(g["model"])
@@ -376,6 +392,10 @@ def render(out):
     add = L.append
     add(f"inferopt report - last {out['days']:g} days")
     add("=" * 60)
+    if out.get("price_as"):
+        add(f"PRICED AS: {out['price_as']} - observed token counts re-priced")
+        add(f"at that model's rates (actual traffic ran on other/free models).")
+        add("")
     if not out["n_ok"]:
         add("No successful requests logged yet. Start `inferopt proxy`, set")
         add("ANTHROPIC_BASE_URL=http://127.0.0.1:8484 and run your workload.")
@@ -459,8 +479,8 @@ def render(out):
     return "\n".join(L)
 
 
-def report(con, days=30, as_json=False):
-    out = analyze(con, days)
+def report(con, days=30, as_json=False, price_as=None):
+    out = analyze(con, days, price_as=price_as)
     if as_json:
         return json.dumps(out, indent=2, default=str)
     return render(out)

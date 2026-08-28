@@ -124,6 +124,21 @@ instructed to grade tool-call field values on substance. The judge is
 blind (not told which side is the incumbent) and A/B order alternates per
 pair to cancel position and verbosity bias.
 
+## Profiling for free (v0.9)
+
+Free models price at $0, which makes every savings figure $0 and the
+report useless as evidence. But the *waste* is real and is borne by
+whoever runs the same traffic on a paid model. So:
+
+```bash
+inferopt report --price-as claude-sonnet-5
+```
+
+re-prices the observed token counts at that model's rates. The header
+states plainly that the traffic actually ran elsewhere. This makes
+zero-budget profiling produce quotable numbers without pretending you
+measured spend you didn't.
+
 ## OpenAI-compatible rail (v0.8)
 
 Third rail for any OpenAI-compatible endpoint - OpenRouter, Together,

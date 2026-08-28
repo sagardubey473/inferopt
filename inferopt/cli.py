@@ -16,6 +16,10 @@ def main():
     sr = sub.add_parser("report", help="analyze logged traffic, print findings")
     sr.add_argument("--days", type=float, default=30)
     sr.add_argument("--json", action="store_true")
+    sr.add_argument("--price-as", dest="price_as", metavar="MODEL",
+                    help="re-price observed tokens at MODEL's rates - use "
+                         "when the traffic ran on free models but you want "
+                         "the real-world cost of the same waste")
 
     sub.add_parser("callsites", help="list observed call sites")
 
@@ -54,7 +58,8 @@ def main():
         proxy.run(args.port)
     elif args.cmd == "report":
         from . import analyze, db
-        print(analyze.report(db.connect(), days=args.days, as_json=args.json))
+        print(analyze.report(db.connect(), days=args.days, as_json=args.json,
+                             price_as=args.price_as))
     elif args.cmd == "callsites":
         from . import analyze, db
         _, _, groups = analyze.load(db.connect(), days=3650)
