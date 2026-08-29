@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inferopt"
-version = "0.9.0"
-description = "Local inference cost optimizer: logging proxy + savings analyzer + replay prover for the Anthropic API"
+version = "0.10.0"
+description = "Find where your LLM spend is wasted, from logs you already have. Local-only."
 requires-python = ">=3.10"
 dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27", "botocore>=1.34"]
 

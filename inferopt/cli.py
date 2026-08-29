@@ -21,6 +21,19 @@ def main():
                          "when the traffic ran on free models but you want "
                          "the real-world cost of the same waste")
 
+    sa = sub.add_parser("analyze",
+                        help="analyze an existing log file (no proxy, no "
+                             "config change) and print the report")
+    sa.add_argument("logfile")
+    sa.add_argument("--days", type=float, default=3650)
+    sa.add_argument("--json", action="store_true")
+    sa.add_argument("--price-as", dest="price_as", metavar="MODEL",
+                    help="re-price observed tokens at MODEL's rates")
+
+    si = sub.add_parser("ingest",
+                        help="load a log file into the persistent database")
+    si.add_argument("logfile")
+
     sub.add_parser("callsites", help="list observed call sites")
 
     sx = sub.add_parser("replay",
@@ -53,7 +66,25 @@ def main():
 
     args = p.parse_args()
 
-    if args.cmd == "proxy":
+    if args.cmd == "analyze":
+        import sqlite3
+        from . import analyze, db, ingest
+        con = sqlite3.connect(":memory:")
+        con.executescript(db.SCHEMA)
+        con.row_factory = sqlite3.Row
+        n, _ = ingest.ingest(con, args.logfile)
+        if not n:
+            print("nothing usable in that file - see the format notes in "
+                  "the README (`inferopt analyze --help`)")
+            return
+        print()
+        print(analyze.report(con, days=args.days, as_json=args.json,
+                             price_as=args.price_as))
+    elif args.cmd == "ingest":
+        from . import db, ingest
+        ingest.ingest(db.connect(), args.logfile)
+        print("run `inferopt report` to analyze it")
+    elif args.cmd == "proxy":
         from . import proxy
         proxy.run(args.port)
     elif args.cmd == "report":

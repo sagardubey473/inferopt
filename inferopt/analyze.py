@@ -390,7 +390,8 @@ def _money(x):
 def render(out):
     L = []
     add = L.append
-    add(f"inferopt report - last {out['days']:g} days")
+    add("inferopt report" if out["days"] >= 3650
+        else f"inferopt report - last {out['days']:g} days")
     add("=" * 60)
     if out.get("price_as"):
         add(f"PRICED AS: {out['price_as']} - observed token counts re-priced")
@@ -442,6 +443,15 @@ def render(out):
         add(f"  TOTAL potential if every untested tier swap passed: "
             f"{_money(out['total_potential_savings'])}/mo  "
             f"<- do not quote this to anyone")
+        add("")
+    clean = [fp for fp in out["groups"]
+             if not any(f["site"] == fp for f in out["findings"])
+             and not any(w["site"] == fp for w in out["tier_whatif"])]
+    if clean:
+        add(f"CLEAN CALL SITES ({len(clean)}) - analyzed, nothing to fix")
+        add("-" * 60)
+        for fp in clean:
+            add(f"  {fp}  {out['groups'][fp]['hint'][:60]}")
         add("")
     add("FINDINGS (ranked by estimated monthly savings)")
     add("  NOTE: each figure below is STANDALONE - what that one lever saves")
