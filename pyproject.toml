@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inferopt"
-version = "0.11.0"
+version = "0.11.1"
 description = "Find where your LLM spend is wasted, from logs you already have. Local-only."
 readme = "README.md"
 requires-python = ">=3.10"
