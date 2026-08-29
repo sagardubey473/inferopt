@@ -8,15 +8,16 @@ worth per month. Everything runs locally.
 
 ## Try it in 10 seconds
 
-A synthetic week of traffic for a fictional support product ships with
-the repo, so you can see real output before pointing it at anything of
-your own:
+No install, no account, no API key, no data of your own. A synthetic week
+of traffic for a fictional support product ships inside the package:
 
 ```bash
-git clone https://github.com/sagardubey473/inferopt && cd inferopt
-python3 -m venv .venv && .venv/bin/pip install -e .
-.venv/bin/inferopt analyze examples/sample-log.jsonl.gz
+uvx inferopt demo
 ```
+
+(Or `pipx run inferopt demo`, or `pip install inferopt && inferopt demo`.)
+The analyze path has **zero dependencies** on purpose, so that command
+finishes in about a second.
 
 Abbreviated output:
 
@@ -58,7 +59,7 @@ requests and points at the exact byte.
 ## Run it on your own logs
 
 ```bash
-.venv/bin/inferopt analyze your-logs.jsonl        # .jsonl, .json, .csv, .gz
+uvx inferopt analyze your-logs.jsonl        # .jsonl, .json, .csv, .gz
 ```
 
 The canonical format is one JSON object per line:
@@ -113,7 +114,8 @@ If you want continuous measurement rather than a one-off analysis, there
 is a local proxy that logs traffic as it happens. It speaks three rails:
 
 ```bash
-.venv/bin/inferopt proxy
+pip install 'inferopt[proxy,bedrock]'    # the proxy needs extra packages
+inferopt proxy
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8484              # Anthropic API
 export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://127.0.0.1:8484 # Bedrock (re-signs SigV4)
 # OpenAI-compatible clients: base_url = http://127.0.0.1:8484/v1
@@ -129,8 +131,8 @@ Cheaper-model findings are hypotheses until tested. `replay` re-runs real
 logged requests against a candidate model and compares them:
 
 ```bash
-.venv/bin/inferopt replay --callsite <fp> --model claude-sonnet-5 --judge
-.venv/bin/inferopt decide --callsite <fp> --model claude-sonnet-5 --go
+inferopt replay --callsite <fp> --model claude-sonnet-5 --judge
+inferopt decide --callsite <fp> --model claude-sonnet-5 --go
 ```
 
 Two things worth knowing about how it judges. Before any LLM sees the
@@ -148,17 +150,18 @@ only proven savings in the defensible total.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `analyze <file>` | one-shot analysis of a log file |
-| `ingest <file>` | load a log file into the persistent database |
-| `report [--days N] [--price-as MODEL]` | analyze everything collected |
-| `callsites` | list observed call sites |
-| `proxy [--port 8484]` | live logging proxy |
-| `replay --callsite <fp> --model <m> [--judge]` | test a cheaper model on real requests |
-| `decide --callsite <fp> --model <m> --go\|--no-go` | record a validation outcome |
-| `ledger` | show recorded decisions |
-| `purge` | delete the local database |
+| Command | What it does | Needs |
+|---|---|---|
+| `demo` | run the bundled sample and print a full report | nothing |
+| `analyze <file>` | one-shot analysis of a log file | nothing |
+| `ingest <file>` | load a log file into the persistent database | nothing |
+| `report [--days N] [--price-as MODEL]` | analyze everything collected | nothing |
+| `callsites` | list observed call sites | nothing |
+| `proxy [--port 8484]` | live logging proxy | `[proxy]` |
+| `replay --callsite <fp> --model <m> [--judge]` | test a cheaper model on real requests | `[replay]` |
+| `decide --callsite <fp> --model <m> --go\|--no-go` | record a validation outcome | nothing |
+| `ledger` | show recorded decisions | nothing |
+| `purge` | delete the local database | nothing |
 
 `--price-as MODEL` re-prices observed tokens at another model's rates,
 which is useful when traffic ran on free or self-hosted models but you

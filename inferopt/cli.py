@@ -34,6 +34,10 @@ def main():
                         help="load a log file into the persistent database")
     si.add_argument("logfile")
 
+    sub.add_parser("demo",
+                   help="run the bundled sample log and print a full report "
+                        "(no API key, no data of your own, no setup)")
+
     sub.add_parser("callsites", help="list observed call sites")
 
     sx = sub.add_parser("replay",
@@ -66,7 +70,26 @@ def main():
 
     args = p.parse_args()
 
-    if args.cmd == "analyze":
+    if args.cmd == "demo":
+        import sqlite3
+        from importlib import resources
+        from . import analyze, db, ingest
+        with resources.as_file(
+                resources.files("inferopt").joinpath(
+                    "data/sample-log.jsonl.gz")) as p:
+            con = sqlite3.connect(":memory:")
+            con.executescript(db.SCHEMA)
+            con.row_factory = sqlite3.Row
+            print("Running the bundled sample: one synthetic week of traffic "
+                  "for a fictional\nsupport product. Nothing here is your "
+                  "data and no network calls are made.\n")
+            ingest.ingest(con, str(p))
+            print()
+            print(analyze.report(con, days=3650))
+        print("\nRun it on your own logs:  inferopt analyze <your-log-file>")
+        print("Format notes:             https://github.com/sagardubey473/"
+              "inferopt#run-it-on-your-own-logs")
+    elif args.cmd == "analyze":
         import sqlite3
         from . import analyze, db, ingest
         con = sqlite3.connect(":memory:")
@@ -85,7 +108,13 @@ def main():
         ingest.ingest(db.connect(), args.logfile)
         print("run `inferopt report` to analyze it")
     elif args.cmd == "proxy":
-        from . import proxy
+        try:
+            from . import proxy
+        except ImportError as e:
+            sys.exit(f"the live proxy needs extra packages ({e.name}). "
+                     f"Install with:  pip install 'inferopt[proxy]'  "
+                     f"(add [bedrock] for the AWS rail). The `analyze` and "
+                     f"`report` commands need nothing extra.")
         proxy.run(args.port)
     elif args.cmd == "report":
         from . import analyze, db
@@ -102,7 +131,11 @@ def main():
             print(f"{fp}  n={g['n']:<5} {g['model']:<24} "
                   f"cost=${g['cost']:.4f}  {g['hint']}")
     elif args.cmd == "replay":
-        from . import replay
+        try:
+            from . import replay
+        except ImportError as e:
+            sys.exit(f"replay needs extra packages ({e.name}). Install with: "
+                     f"pip install 'inferopt[replay]'")
         replay.replay(args.callsite, n=args.n, model=args.model,
                       effort=args.effort, judge=args.judge, yes=args.yes,
                       judge_model=args.judge_model)

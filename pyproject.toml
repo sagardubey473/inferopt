@@ -4,13 +4,41 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inferopt"
-version = "0.10.0"
+version = "0.11.0"
 description = "Find where your LLM spend is wasted, from logs you already have. Local-only."
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27", "botocore>=1.34"]
+license = "MIT"
+authors = [{name = "Sagar Dubey"}]
+keywords = ["llm", "cost", "optimization", "anthropic", "openai", "bedrock",
+            "prompt-caching", "observability", "finops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Monitoring",
+]
+# The analyze/report path is pure stdlib on purpose: `uvx inferopt demo`
+# and `uvx inferopt analyze <file>` install nothing.
+dependencies = []
+
+[project.optional-dependencies]
+proxy = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
+bedrock = ["botocore>=1.34", "httpx>=0.27"]
+replay = ["httpx>=0.27"]
+all = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27", "botocore>=1.34"]
+
+[project.urls]
+Homepage = "https://github.com/sagardubey473/inferopt"
+Repository = "https://github.com/sagardubey473/inferopt"
+Issues = "https://github.com/sagardubey473/inferopt/issues"
 
 [project.scripts]
 inferopt = "inferopt.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["inferopt*"]
+
+[tool.setuptools.package-data]
+inferopt = ["data/*.jsonl.gz"]
