@@ -9,6 +9,7 @@ description = "Find where your LLM spend is wasted, from logs you already have. 
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Sagar Dubey"}]
 keywords = ["llm", "cost", "optimization", "anthropic", "openai", "bedrock",
             "prompt-caching", "observability", "finops"]
